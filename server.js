@@ -32,7 +32,38 @@ async function ai(system, user) {
   return JSON.parse(t.slice(t.indexOf('{'), t.lastIndexOf('}') + 1));
 }
 const MOD_SYS = `You moderate trivia-style questions for a party game where players name things ("Name a type of pasta"). Approve only questions that are: objective (answers can be checked), fair (no personal/private knowledge), answerable (many valid answers), clear without context, allow answers from very common to very obscure, and appropriate (no offensive, discriminatory or sexually explicit content). Reject subjective ("coolest", "best"), personal, or too-narrow questions. Reply ONLY with JSON: {"approved":bool,"reason":string,"suggested_revision":string|null,"difficulty":1-5}`;
-const GRADE_SYS = `You grade answers for a "nicheness" game. Step 1: is the answer valid for the question (accept synonyms, aliases, spelling variants, reasonable interpretations)? Step 2: if valid, assign exactly one category, judged RELATIVE TO THE QUESTION: "Plankton" (obvious, first thing most people say), "Schooler" (somewhat niche but recognizable), "Rare" (uncommon knowledge), "Deep Cut" (very obscure, needs specific knowledge), "One in a Krillion" (exceptionally obscure and hard to think of). Do not reward length or complexity by itself; an unusual answer isn't automatically a deep cut. Be consistent: identical answers always get identical categories. If a "Trap answer" is given, set matches_trap true only if the Answer is the same thing as the Trap answer (synonym, alias or spelling variant); still grade the category normally. Reply ONLY with JSON: {"valid":bool,"normalized_answer":string,"category":string,"matches_trap":bool,"reason":string}`;
+const GRADE_SYS = `You grade answers for a "nicheness" game. Follow these evaluation steps strictly:
+
+Step 1: Validity and alias resolution
+- Determine if the answer is valid for the question.
+- Accept standard synonyms, official or unofficial aliases, common misspellings, localized names, and reasonable contextual interpretations.
+- If the answer is not something you recognize but plausibly fits the question, treat it as valid and grade it Deep Cut or higher. If it looks made up, is gibberish, or clearly does not fit the question, it is invalid.
+- If invalid, set valid to false, category to "Invalid", and explain in "reason".
+
+Step 2: Context-relative nicheness
+CORE RULE: Judge nicheness strictly relative to the domain defined by the Question, NEVER against general world knowledge.
+- Assume the audience is knowledgeable about the topic of the question. Imagine 100 people who know this topic well and ask how many of them would think of this answer.
+- Example: for a question about Quantum Physics, terms like "Photon" or "Electron" are "Plankton", even though the average person on the street might not know them.
+- Example: for a niche topic like 1990s Anime Soundtracks, the most famous soundtrack is "Plankton", while an unreleased demo track is "One in a Krillion".
+
+Assign EXACTLY ONE category:
+- "Plankton": the top 1-3 immediate answers; roughly 80 or more of those 100 would think of it. Flagship examples, main characters, standard defaults.
+- "Schooler": recognizable to most people familiar with the topic; roughly 40-79 of 100. Well-known secondary entries, popular side content.
+- "Rare": requires solid familiarity with the topic; roughly 15-39 of 100. Lesser-known details that need active memory retrieval.
+- "Deep Cut": requires dedicated knowledge; roughly 3-14 of 100. Background details, obscure spin-offs, minor entries, deep lore.
+- "One in a Krillion": exceptionally rare even among topic experts; fewer than 3 of 100. Footnotes, single-frame cameos, unreleased media, hyper-specific edge cases within the exact scope of the question.
+The percentages are rough guides, not exact cutoffs. If torn between two categories, pick the more common (lower) one.
+
+Examples for the question "Name a Looney Tunes character": Bugs Bunny = Plankton. Foghorn Leghorn = Schooler. Gossamer = Rare. Michigan J. Frog = Deep Cut. Hubie and Bertie = One in a Krillion.
+
+Evaluation rules:
+1. Relative calibration: never call an answer "Deep Cut" just because the general public would not know it; judge it only against other answers to THAT question.
+2. Obscurity vs complexity: word length or technical jargon does not determine nicheness. A simple answer can be "One in a Krillion" if it is virtually forgotten within the domain.
+3. Consistency: identical answers to the same question must always get the same category.
+4. Strict trap matching: set matches_trap to true ONLY if the Answer is the exact same underlying entity or concept as the Trap answer (accounting for aliases and synonyms). Always grade the category normally regardless of a trap match.
+
+Reply ONLY with valid JSON, writing "reason" (one short sentence) BEFORE "category":
+{"valid": bool, "normalized_answer": "string", "reason": "string", "category": "string", "matches_trap": bool}`;
 const mockMod = q => { const bad = /\b(best|cool|coolest|favou?rite|yesterday|i|my|me)\b/i.test(q) || q.trim().length < 10;
   return { approved: !bad, reason: bad ? '[MOCK] Too short or subjective/personal.' : '[MOCK] Looks fine.', suggested_revision: null, difficulty: 3 }; };
 const mockGrade = (q, a, tc) => { let h = 0; for (const c of a.toLowerCase().trim()) h = (h * 31 + c.charCodeAt(0)) % 9973;
