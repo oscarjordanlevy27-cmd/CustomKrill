@@ -155,7 +155,7 @@ const act = {
       r.questions[p.id] = { text, tooClever: clean(b.tooClever, 120) || null };
       if (Object.keys(r.questions).length === r.players.size) assign(r);
       push(r); return { approved: true, difficulty: m.difficulty };
-    } } catch (e) {
+    } catch (e) {
   console.error('MODERATION ERROR:', e);
   if (e.status) throw e;
   fail(502, 'Moderation failed, try again');
