@@ -1,4 +1,4 @@
-// Krillion Party: zero-dependency Node server (Node 18+). State is in memory; SSE for realtime.
+// Custom Krill: zero-dependency Node server (Node 18+). State is in memory; SSE for realtime.
 const http = require('http'), fs = require('fs'), path = require('path');
 const PORT = process.env.PORT || 3000, KEY = process.env.ANTHROPIC_API_KEY, GROQ = process.env.GROQ_API_KEY;
 const HAS = GROQ || KEY; // Groq wins if both are set; neither = mock grader
@@ -34,11 +34,12 @@ async function ai(system, user) {
 const MOD_SYS = `You moderate trivia-style questions for a party game where players name things ("Name a type of pasta"). Approve only questions that are: objective (answers can be checked), fair (no personal/private knowledge), answerable (many valid answers), clear without context, allow answers from very common to very obscure, and appropriate (no offensive, discriminatory or sexually explicit content). Reject subjective ("coolest", "best"), personal, or too-narrow questions. Reply ONLY with JSON: {"approved":bool,"reason":string,"suggested_revision":string|null,"difficulty":1-5}`;
 const GRADE_SYS = `You grade answers for a "nicheness" game. Follow these evaluation steps strictly:
 
-Step 1: Validity and alias resolution
-- Determine if the answer is valid for the question.
-- Accept standard synonyms, official or unofficial aliases, common misspellings, localized names, and reasonable contextual interpretations.
-- If the answer is not something you recognize but plausibly fits the question, treat it as valid and grade it Deep Cut or higher. If it looks made up, is gibberish, or clearly does not fit the question, it is invalid.
-- If invalid, set valid to false, category to "Invalid", and explain in "reason".
+Step 1: Validity, spelling and alias resolution
+- Determine if the answer is valid for the question: it must be a real thing that belongs in the category the question asks for.
+- Accept standard synonyms, official or unofficial aliases, localized names, and reasonable contextual interpretations.
+- Spelling: if the answer is a slight misspelling or typo of a real answer (one or two letters wrong, missing, extra or swapped), set valid to true, misspelled to true, and corrected to the properly spelled answer, and grade the corrected answer. If the spelling is already correct, or is an accepted variant spelling, set misspelled to false and corrected to the answer as written. Never use misspelled for aliases, synonyms or different words.
+- If the answer is not something you recognize but plausibly fits the question, treat it as valid and grade it Deep Cut or higher. If it looks made up, is gibberish, or clearly does not fit the category of the question, it is invalid.
+- If invalid, set valid to false, category to "Invalid", misspelled to false, and explain in "reason".
 
 Step 2: Context-relative nicheness
 CORE RULE: Judge nicheness strictly relative to the domain defined by the Question, NEVER against general world knowledge.
@@ -63,16 +64,30 @@ Evaluation rules:
 4. Strict trap matching: set matches_trap to true ONLY if the Answer is the exact same underlying entity or concept as the Trap answer (accounting for aliases and synonyms). Always grade the category normally regardless of a trap match.
 
 Reply ONLY with valid JSON, writing "reason" (one short sentence) BEFORE "category":
-{"valid": bool, "normalized_answer": "string", "reason": "string", "category": "string", "matches_trap": bool}`;
+{"valid": bool, "normalized_answer": "string", "misspelled": bool, "corrected": "string", "reason": "string", "category": "string", "matches_trap": bool}`;
 const mockMod = q => { const bad = /\b(best|cool|coolest|favou?rite|yesterday|i|my|me)\b/i.test(q) || q.trim().length < 10;
   return { approved: !bad, reason: bad ? '[MOCK] Too short or subjective/personal.' : '[MOCK] Looks fine.', suggested_revision: null, difficulty: 3 }; };
-const mockGrade = (q, a, tc) => { let h = 0; for (const c of a.toLowerCase().trim()) h = (h * 31 + c.charCodeAt(0)) % 9973;
-  return { valid: a.trim().length > 0, normalized_answer: a.trim(), category: Object.keys(CATS)[h % 5], matches_trap: !!tc && a.trim().toLowerCase() === tc.trim().toLowerCase(), reason: '[MOCK] Deterministic hash grade; set ANTHROPIC_API_KEY for real grading.' }; };
+// ---------- spellcheck helpers ----------
+const lev = (a, b) => { const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]); for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); return d[a.length][b.length]; };
+const flat = s => String(s).toLowerCase().replace(/[^\p{L}\p{N}]/gu, ''); // ignore case, spaces and punctuation
+// A "slight" misspelling: differs after flattening, but only by a couple of letters. Stops the AI from "correcting" into a different word.
+const isTypo = (typed, fix) => { const a = flat(typed), b = flat(fix); if (!a || !b || a === b) return false; const d = lev(a, b); return d <= Math.max(2, Math.floor(b.length * .3)); };
+// Tiny lexicon so the mock grader (no API key) can demo/test spellcheck on "pasta" questions only.
+const MOCK_LEX = ['spaghetti', 'penne', 'fettuccine', 'lasagna', 'macaroni', 'linguine', 'rigatoni', 'tortellini', 'ravioli', 'fusilli', 'farfalle', 'orzo'];
+const mockFix = (q, a) => { if (!/pasta/i.test(q)) return null; const x = flat(a); if (MOCK_LEX.includes(x)) return null;
+  let best = null, bd = 99; for (const w of MOCK_LEX) { const d = lev(x, w); if (d < bd) { bd = d; best = w; } } return best && bd <= Math.max(1, Math.floor(best.length * .25)) ? best : null; };
+const mockGrade = (q, a, tc, literal) => { let h = 0; for (const c of a.toLowerCase().trim()) h = (h * 31 + c.charCodeAt(0)) % 9973;
+  const fix = literal ? null : mockFix(q, a), shown = fix || a.trim();
+  return { valid: /\p{L}/u.test(a), normalized_answer: shown, misspelled: !!fix, corrected: shown, category: Object.keys(CATS)[h % 5], matches_trap: !!tc && flat(shown) === flat(tc), reason: '[MOCK] Deterministic hash grade; set ANTHROPIC_API_KEY for real grading.' }; };
 const moderate = q => HAS ? ai(MOD_SYS, `Question: ${q}`) : mockMod(q);
-async function grade(q, a, tc) {
-  const g = HAS ? await ai(GRADE_SYS, `Question: ${q}\nAnswer: ${a}` + (tc ? `\nTrap answer: ${tc}` : '')) : mockGrade(q, a, tc); // player identity never sent
+// literal: the player already said "no, my spelling is intentional", so grade exactly what they typed.
+async function grade(q, a, tc, literal) {
+  const g = HAS ? await ai(GRADE_SYS, `Question: ${q}\nAnswer: ${a}` + (tc ? `\nTrap answer: ${tc}` : '') + (literal ? `\nSpelling note: the player confirmed this exact spelling is intentional. Do not treat it as a misspelling; judge it exactly as written, and mark it invalid if it is not a real answer in the category.` : '')) : mockGrade(q, a, tc, literal); // player identity never sent
   if (g.valid && !(g.category in CATS)) g.category = 'Plankton'; // e.g. a stray "Too Clever" is coerced
   g.trap = !!(g.valid && tc && g.matches_trap);
+  g.corrected = clean(g.corrected, 120);
+  g.misspelled = !!(g.valid && !literal && g.misspelled && isTypo(a, g.corrected)); // only trust small, real typos
   return g;
 }
 
@@ -144,12 +159,16 @@ const act = {
   async answer(b) { const [r, p] = ctx(b); if (r.phase !== 'answering') fail(409, 'Not answering');
     if (r.answers[p.id] || r.busy.has(p.id)) fail(409, 'Already answered');
     if (Date.now() > r.deadline) fail(409, 'Time is up!');
-    const text = clean(b.text, 120); if (!text) return { ok: false, reason: 'Type an answer.' };
+    const text = clean(b.text, 120);
+    if (!text) { // submitting nothing is allowed, but only on purpose, and it scores 0
+      if (!b.confirmEmpty) return { ok: false, empty: true, reason: 'You typed nothing. Submitting nothing scores 0 points.' };
+      r.answers[p.id] = { normalized: '(no answer)', category: 'No answer', points: 0, reason: 'Submitted nothing.' }; tryFinish(r); return { ok: true }; }
     r.busy.add(p.id);
-    try { const q = r.questions[r.assign[p.id]], g = await grade(q.text, text, q.tooClever);
+    try { const q = r.questions[r.assign[p.id]], g = await grade(q.text, text, q.tooClever, !!b.literal);
       if (!g.valid) { if (Date.now() > r.deadline && r.phase === 'answering') { r.answers[p.id] = timeoutAns(); tryFinish(r); return { ok: false, reason: 'Time is up!' }; }
-        return { ok: false, reason: g.reason || 'That does not answer the question. Try again.' }; }
+        return { ok: false, reason: g.reason || 'That does not fit the question. Try again.' }; } // not in the category: rejected, player can retry
       if (r.phase !== 'answering') fail(409, 'Round changed');
+      if (g.misspelled && !b.confirmed) return { ok: false, suggest: g.corrected, original: text }; // slight typo: ask "did you mean ...?" before scoring
       r.answers[p.id] = { normalized: clean(g.normalized_answer || text, 120), category: g.trap ? 'Too Clever' : g.category, points: g.trap ? 15 : CATS[g.category],
         reason: clean(g.reason, 300) + (g.trap ? ` Matched the question writer's Too Clever answer (would have been ${g.category}).` : '') };
       tryFinish(r); return { ok: true };
@@ -177,4 +196,4 @@ http.createServer(async (req, res) => {
     if (req.method === 'GET') { res.writeHead(200, { 'content-type': 'text/html' }); return res.end(fs.readFileSync(path.join(__dirname, 'public/index.html'))); }
     send(res, 404, { error: 'Not found' });
   } catch (e) { send(res, e.status || 500, { error: e.message }); }
-}).listen(PORT, () => console.log(`Krillion Party on :${PORT} (${GROQ ? 'Groq ' + GROQ_MODEL : KEY ? 'Claude ' + MODEL : 'MOCK AI: set GROQ_API_KEY or ANTHROPIC_API_KEY'})`));
+}).listen(PORT, () => console.log(`Custom Krill on :${PORT} (${GROQ ? 'Groq ' + GROQ_MODEL : KEY ? 'Claude ' + MODEL : 'MOCK AI: set GROQ_API_KEY or ANTHROPIC_API_KEY'})`));
