@@ -1,4 +1,4 @@
-<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Krillion Party</title>
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Custom Krill</title>
 <style>
 :root{--bg:#fafaf7;--ink:#1d1d1b;--mut:#77756e;--line:#e4e2da;--card:#fff}
 @media(prefers-color-scheme:dark){:root{--bg:#161614;--ink:#f1f0ea;--mut:#9a988f;--line:#33322e;--card:#1f1f1c}}
@@ -16,19 +16,23 @@ button{background:var(--ink);color:var(--bg);cursor:pointer;border:0}button.alt{
 <script>
 const $=s=>document.querySelector(s),esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const tok=sessionStorage.tok||(sessionStorage.tok=crypto.randomUUID()); // per-tab identity: separate tabs/incognito = separate players
-let S=null,es=null,msg='',mod=null;
+let S=null,es=null,msg='',mod=null,sug=null; // sug = spellcheck suggestion {fix,orig}
 const fmt=n=>n>0?'+'+n:String(n);
 const cc=c=>c==='No answer'?'NoAnswer':c==='Too Clever'?'TooClever':c==='Deep Cut'?'DeepCut':c==='One in a Krillion'?'Krillion':c;
 const tag=(c,p)=>`<span class="tag ${cc(c)}">${esc(c)} · ${p}</span>`;
 async function api(a,b={}){try{const r=await fetch('/api/'+a,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:tok,code:sessionStorage.code,...b})});const t=await r.text();let d;try{d=JSON.parse(t)}catch{msg='This page is not being served by the game server (got HTML, not JSON). In the project folder run: node server.js, then open http://localhost:3000 (do not open index.html directly or use another dev server).';draw();return null}msg=r.ok?'':(d.error||'Error');draw();return r.ok?d:null}catch(e){msg='Cannot reach the game server: '+e.message;draw()}}
-function connect(){es&&es.close();es=new EventSource(`/events?code=${sessionStorage.code}&token=${tok}`);es.onmessage=e=>{const n=JSON.parse(e.data);n.endAt=n.msLeft!=null?Date.now()+n.msLeft:null;if(S&&(S.phase!==n.phase||S.round!==n.round))mod=null;S=n;draw()}}
+function connect(){es&&es.close();es=new EventSource(`/events?code=${sessionStorage.code}&token=${tok}`);es.onmessage=e=>{const n=JSON.parse(e.data);n.endAt=n.msLeft!=null?Date.now()+n.msLeft:null;if(S&&(S.phase!==n.phase||S.round!==n.round))mod=sug=null;S=n;draw()}}
 async function enter(a,b){sessionStorage.name=b.name;const d=await api(a,{...b,code:b.code});if(d?.code){sessionStorage.code=d.code;history.replaceState(0,'','/');connect()}}
 const create=()=>enter('create',{name:$('#nm').value,code:undefined});
 const join=()=>enter('join',{name:$('#nm').value,code:$('#cd').value.toUpperCase()});
 async function sendQ(){const d=await api('question',{text:$('#q'+S.round).value,tooClever:$('#tc'+S.round).value});if(d)mod=d.approved?null:d;draw()}
-async function sendA(){const d=await api('answer',{text:$('#a'+S.round).value});if(d&&!d.ok)msg=d.reason;draw()}
+// o.text overrides the input (used by the "Did you mean" buttons); o.confirmed skips the spellcheck; o.literal = "keep my spelling"
+async function sendA(o={}){const text=o.text??$('#a'+S.round).value;
+ if(!text.trim()&&!o.confirmEmpty){if(!confirm('Submit nothing? You will get 0 points.'))return;o={...o,confirmEmpty:true}}
+ sug=null;const d=await api('answer',{text,confirmed:o.confirmed,literal:o.literal,confirmEmpty:o.confirmEmpty});
+ if(d&&!d.ok){if(d.suggest)sug={fix:d.suggest,orig:d.original};else msg=d.reason}draw()}
 const board=()=>`<div class=card><b>Leaderboard</b>${[...S.players].sort((a,b)=>b.score-a.score).map((p,i)=>`<div class=row><span>${i+1}. ${esc(p.name)}${p.online?'':' 💤'}</span><span><b>${p.score}</b> ${S.history.map(h=>`<span class=mut>${fmt(h.scores[p.id]??0)}</span>`).join(' ')}</span></div>`).join('')}</div>`;
-const home=()=>`<h1>🦐 Krillion Party</h1><p>Write a question for a friend. Answer a question from someone else. Your round score is the nicheness of the answer <b>you</b> gave minus the nicheness of the answer your question got, so it can go negative. Answer niche, and write questions that get common answers. You have 25 seconds to answer.</p>
+const home=()=>`<h1>🦐 Custom Krill</h1><p>Write a question for a friend. Answer a question from someone else. Your round score is the nicheness of the answer <b>you</b> gave minus the nicheness of the answer your question got, so it can go negative. Answer niche, and write questions that get common answers. You have 25 seconds to answer.</p>
 <div class=card><input id=nm placeholder="Your name" maxlength=20 value="${esc(sessionStorage.name||'')}"><button onclick="create()">Create room</button><hr style="border:0;border-top:1px solid var(--line);margin:14px 0"><input id=cd placeholder="Room code" maxlength=4 style="text-transform:uppercase" value="${esc(new URLSearchParams(location.search).get('room')||'')}"><button class=alt onclick="join()">Join room</button></div>`;
 function room(){const me=S.players.find(p=>p.id===S.me),host=S.hostId===S.me,n=S.players.length,R=S.round;
  let h=`<div class=row><b>🦐 Room ${S.code}</b><span class=mut>${S.round?'Round '+R:'Lobby'}</span></div>`,b='';
@@ -38,7 +42,7 @@ function room(){const me=S.players.find(p=>p.id===S.me),host=S.hostId===S.me,n=S
   `<div class=card><b>Write a question</b><p class=mut>Something with answers from obvious to obscure, like "Name a type of pasta".</p><textarea id="q${R}" rows=2 maxlength=200 placeholder="Name a…"></textarea>
   <div class=mut style="margin-top:8px">Too Clever answer (optional): the niche answer you think someone will give. If they give it, it only scores 15. Hidden from them.</div><input id="tc${R}" maxlength=120 placeholder="e.g. a very niche answer">
   ${mod?`<p class=err>${esc(mod.reason)}${mod.suggested_revision?`<br><i>Try: ${esc(mod.suggested_revision)}</i>`:''}</p>`:''}<button onclick="sendQ()">Submit question</button></div>`;
- else if(S.phase==='answering')b=S.task?`<div class=card><div class=row><div class=mut>Your question</div><b id=timer></b></div><h2 style="margin:.2em 0">${esc(S.task.question)}</h2><input id="a${R}" maxlength=120 placeholder="Your answer" onkeydown="event.key==='Enter'&&sendA()"><button onclick="sendA()">Submit answer</button></div>`:`<div class=card>✅ Done. Waiting for others (${S.players.filter(p=>p.hasA).length}/${n}).</div>`;
+ else if(S.phase==='answering')b=S.task?`<div class=card><div class=row><div class=mut>Your question</div><b id=timer></b></div><h2 style="margin:.2em 0">${esc(S.task.question)}</h2>${sug?`<div id=sug class=card style="border-color:var(--ink)"><b>Did you mean “${esc(sug.fix)}”?</b><div class=mut>You typed “${esc(sug.orig)}”.</div><div class=row><button onclick="sendA({text:sug.fix,confirmed:true})">Yes, use that</button><button class=alt onclick="sendA({text:sug.orig,confirmed:true,literal:true})">No, keep mine</button></div></div>`:''}<input id="a${R}" maxlength=120 placeholder="Your answer" oninput="document.getElementById('sug')?.remove();sug=null" onkeydown="event.key==='Enter'&&sendA()"><button onclick="sendA()">Submit answer</button><div class=mut>Answers must fit the question. Small typos get a “did you mean” check. Submitting nothing scores 0.</div></div>`:`<div class=card>✅ Done. Waiting for others (${S.players.filter(p=>p.hasA).length}/${n}).</div>`;
  else b=`<h2>Round ${R} results</h2>`+S.results.rows.map(x=>`<div class=card><div class=mut>${esc(x.author)} asked${x.tooClever?` · Too Clever answer: <b>${esc(x.tooClever)}</b> ${x.caught?'✅ caught':'❌ missed'}`:''}</div><b>${esc(x.question)}</b><div class=row style="margin-top:8px"><span>${esc(x.answerer)}: <b>${esc(x.answer)}</b></span>${tag(x.category,x.points)}</div><div class=mut>${esc(x.reason)}</div></div>`).join('')+
   `<div class=card><b>Round scores</b>${Object.values(S.results.scores).map(s=>`<div class=row><span>${esc(s.name)} <span class=mut>${s.gave} − ${s.got}</span></span><b>${fmt(s.round)}</b></div>`).join('')}</div>`+(host?`<button onclick="api('next')">Next round</button>`:'<p class=mut>Waiting for the host to start the next round.</p>');
  return h+b+(S.round?board():'')}
