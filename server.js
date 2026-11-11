@@ -2,6 +2,7 @@
 const http = require('http'), fs = require('fs'), path = require('path');
 const PORT = process.env.PORT || 3000, KEY = process.env.ANTHROPIC_API_KEY, GROQ = process.env.GROQ_API_KEY;
 const HAS = GROQ || KEY; // Groq wins if both are set; neither = mock grader
+const ANSWER_MS = +process.env.ANSWER_MS || 25000; // time limit to answer
 const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
 const MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-5-5';
 // Too Clever (15) is not gradable by nicheness: it applies only when an answer matches the question writer's optional trap answer.
@@ -16,13 +17,13 @@ const newCode = () => { let c; do c = Array.from({ length: 4 }, () => 'ABCDEFGHJ
 async function ai(system, user) {
   let t;
   if (GROQ) {
-    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', { method: 'POST',
+    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', { method: 'POST', signal: AbortSignal.timeout(15000),
       headers: { 'content-type': 'application/json', authorization: 'Bearer ' + GROQ },
       body: JSON.stringify({ model: GROQ_MODEL, temperature: 0, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }) });
     const d = await r.json(); if (!r.ok) throw new Error('AI error: ' + JSON.stringify(d).slice(0, 200));
     t = d.choices[0].message.content;
   } else {
-    const r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST',
+    const r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', signal: AbortSignal.timeout(15000),
       headers: { 'content-type': 'application/json', 'x-api-key': KEY, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({ model: MODEL, max_tokens: 500, temperature: 0, system, messages: [{ role: 'user', content: user }] }) });
     const d = await r.json(); if (!r.ok) throw new Error('AI error: ' + JSON.stringify(d).slice(0, 200));
@@ -45,10 +46,15 @@ async function grade(q, a, tc) {
 }
 
 // ---------- game logic ----------
+const timeoutAns = () => ({ normalized: '(no answer)', category: 'No answer', points: 0, reason: 'Ran out of time.' });
+function fillMissing(r) { for (const id of r.players.keys()) if (!r.answers[id] && !r.busy.has(id)) r.answers[id] = timeoutAns(); }
+function tryFinish(r) { if (r.phase === 'answering' && Object.keys(r.answers).length === r.players.size) finish(r); push(r); }
 function reset(r) { r.questions = {}; r.assign = {}; r.answers = {}; r.last = null; r.busy = new Set(); }
 function assign(r) { // random cyclic derangement: nobody gets own question, every question answered once
   const s = shuffle([...r.players.keys()]); r.assign = {};
   s.forEach((au, i) => { r.assign[s[(i + 1) % s.length]] = au; }); r.phase = 'answering';
+  r.deadline = Date.now() + ANSWER_MS; const rd = r.round;
+  setTimeout(() => { if (r.phase === 'answering' && r.round === rd) { fillMissing(r); tryFinish(r); } }, ANSWER_MS + 500);
 }
 function finish(r) {
   const nm = id => r.players.get(id).name;
@@ -56,9 +62,9 @@ function finish(r) {
     return { authorId: au, author: nm(au), question: q.text, tooClever: q.tooClever, answererId: ans, answerer: nm(ans), answer: a.normalized,
       category: a.category, points: a.points, reason: a.reason, caught: q.tooClever ? a.category === 'Too Clever' : null }; });
   const scores = {};
-  for (const p of r.players.values()) { // Round score = |nicheness I gave - nicheness my question received|
+  for (const p of r.players.values()) { // Round score = nicheness I gave - nicheness my question received (can be negative)
     const gave = rows.find(x => x.answererId === p.id), got = rows.find(x => x.authorId === p.id);
-    const s = Math.abs(gave.points - got.points); p.score += s; scores[p.id] = { name: p.name, gave: gave.points, got: got.points, round: s };
+    const s = gave.points - got.points; p.score += s; scores[p.id] = { name: p.name, gave: gave.points, got: got.points, round: s };
   }
   r.last = { rows, scores }; r.history.push({ round: r.round, scores: Object.fromEntries(Object.entries(scores).map(([k, v]) => [k, v.round])) }); r.phase = 'results';
 }
@@ -68,6 +74,7 @@ function view(r, pid) { // personalized: never leaks other players' questions/an
     players: [...r.players.values()].map(p => ({ id: p.id, name: p.name, ready: p.ready, score: p.score, online: online(p.id), hasQ: !!r.questions[p.id], hasA: !!r.answers[p.id] })) };
   if (r.phase === 'questions') v.myQuestion = r.questions[pid]?.text || null;
   if (r.phase === 'answering') v.task = r.answers[pid] ? null : { question: r.questions[r.assign[pid]].text };
+  if (r.phase === 'answering') v.msLeft = Math.max(0, r.deadline - Date.now());
   if (r.phase === 'results') v.results = r.last;
   return v;
 }
@@ -105,16 +112,17 @@ const act = {
     } catch (e) { if (e.status) throw e; fail(502, 'Moderation failed, try again'); } finally { r.busy.delete(p.id); } },
   async answer(b) { const [r, p] = ctx(b); if (r.phase !== 'answering') fail(409, 'Not answering');
     if (r.answers[p.id] || r.busy.has(p.id)) fail(409, 'Already answered');
+    if (Date.now() > r.deadline) fail(409, 'Time is up!');
     const text = clean(b.text, 120); if (!text) return { ok: false, reason: 'Type an answer.' };
     r.busy.add(p.id);
     try { const q = r.questions[r.assign[p.id]], g = await grade(q.text, text, q.tooClever);
-      if (!g.valid) return { ok: false, reason: g.reason || 'That does not answer the question. Try again.' };
+      if (!g.valid) { if (Date.now() > r.deadline && r.phase === 'answering') { r.answers[p.id] = timeoutAns(); tryFinish(r); return { ok: false, reason: 'Time is up!' }; }
+        return { ok: false, reason: g.reason || 'That does not answer the question. Try again.' }; }
       if (r.phase !== 'answering') fail(409, 'Round changed');
       r.answers[p.id] = { normalized: clean(g.normalized_answer || text, 120), category: g.trap ? 'Too Clever' : g.category, points: g.trap ? 15 : CATS[g.category],
         reason: clean(g.reason, 300) + (g.trap ? ` Matched the question writer's Too Clever answer (would have been ${g.category}).` : '') };
-      if (Object.keys(r.answers).length === r.players.size) finish(r);
-      push(r); return { ok: true };
-    } catch (e) { if (e.status) throw e; fail(502, 'Grading failed, try again'); } finally { r.busy.delete(p.id); } },
+      tryFinish(r); return { ok: true };
+    } catch (e) { if (e.status) throw e; if (Date.now() > r.deadline && r.phase === 'answering' && !r.answers[p.id]) { r.answers[p.id] = timeoutAns(); tryFinish(r); } fail(502, 'Grading failed, try again'); } finally { r.busy.delete(p.id); } },
   next(b) { const [r, p] = ctx(b); if (p.id !== r.hostId) fail(403, 'Host only'); if (r.phase !== 'results') fail(409, 'Round not finished');
     r.round++; reset(r); r.phase = 'questions'; push(r); return {}; },
 };
