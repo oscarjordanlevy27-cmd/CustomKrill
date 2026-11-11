@@ -1,5 +1,5 @@
 const { spawn } = require('child_process');
-const srv = spawn('node', ['server.js'], { env: { ...process.env, PORT: 3111, ANTHROPIC_API_KEY: '' } });
+const srv = spawn('node', ['server.js'], { env: { ...process.env, PORT: 3111, ANTHROPIC_API_KEY: '', GROQ_API_KEY: '' } });
 const B = 'http://localhost:3111';
 const post = async (a, b) => { const r = await fetch(B + '/api/' + a, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) }); return { s: r.status, ...(await r.json()) }; };
 const state = async (c, t) => (await fetch(`${B}/api/state?code=${c}&token=${t}`)).json();
