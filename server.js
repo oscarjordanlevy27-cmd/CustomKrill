@@ -1,6 +1,8 @@
 // Krillion Party: zero-dependency Node server (Node 18+). State is in memory; SSE for realtime.
 const http = require('http'), fs = require('fs'), path = require('path');
-const PORT = process.env.PORT || 3000, KEY = process.env.ANTHROPIC_API_KEY;
+const PORT = process.env.PORT || 3000, KEY = process.env.ANTHROPIC_API_KEY, GROQ = process.env.GROQ_API_KEY;
+const HAS = GROQ || KEY; // Groq wins if both are set; neither = mock grader
+const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
 const MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-5-5';
 // Too Clever (15) is not gradable by nicheness: it applies only when an answer matches the question writer's optional trap answer.
 const CATS = { Plankton: 10, Schooler: 30, Rare: 60, 'Deep Cut': 85, 'One in a Krillion': 100 };
@@ -12,11 +14,20 @@ const newCode = () => { let c; do c = Array.from({ length: 4 }, () => 'ABCDEFGHJ
 
 // ---------- AI (server-side only) ----------
 async function ai(system, user) {
-  const r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-api-key': KEY, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({ model: MODEL, max_tokens: 500, temperature: 0, system, messages: [{ role: 'user', content: user }] }) });
-  const d = await r.json(); if (!r.ok) throw new Error('AI error: ' + JSON.stringify(d).slice(0, 200));
-  const t = d.content.map(c => c.text || '').join('');
+  let t;
+  if (GROQ) {
+    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', { method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + GROQ },
+      body: JSON.stringify({ model: GROQ_MODEL, temperature: 0, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }) });
+    const d = await r.json(); if (!r.ok) throw new Error('AI error: ' + JSON.stringify(d).slice(0, 200));
+    t = d.choices[0].message.content;
+  } else {
+    const r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': KEY, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({ model: MODEL, max_tokens: 500, temperature: 0, system, messages: [{ role: 'user', content: user }] }) });
+    const d = await r.json(); if (!r.ok) throw new Error('AI error: ' + JSON.stringify(d).slice(0, 200));
+    t = d.content.map(c => c.text || '').join('');
+  }
   return JSON.parse(t.slice(t.indexOf('{'), t.lastIndexOf('}') + 1));
 }
 const MOD_SYS = `You moderate trivia-style questions for a party game where players name things ("Name a type of pasta"). Approve only questions that are: objective (answers can be checked), fair (no personal/private knowledge), answerable (many valid answers), clear without context, allow answers from very common to very obscure, and appropriate (no offensive, discriminatory or sexually explicit content). Reject subjective ("coolest", "best"), personal, or too-narrow questions. Reply ONLY with JSON: {"approved":bool,"reason":string,"suggested_revision":string|null,"difficulty":1-5}`;
@@ -25,9 +36,9 @@ const mockMod = q => { const bad = /\b(best|cool|coolest|favou?rite|yesterday|i|
   return { approved: !bad, reason: bad ? '[MOCK] Too short or subjective/personal.' : '[MOCK] Looks fine.', suggested_revision: null, difficulty: 3 }; };
 const mockGrade = (q, a, tc) => { let h = 0; for (const c of a.toLowerCase().trim()) h = (h * 31 + c.charCodeAt(0)) % 9973;
   return { valid: a.trim().length > 0, normalized_answer: a.trim(), category: Object.keys(CATS)[h % 5], matches_trap: !!tc && a.trim().toLowerCase() === tc.trim().toLowerCase(), reason: '[MOCK] Deterministic hash grade; set ANTHROPIC_API_KEY for real grading.' }; };
-const moderate = q => KEY ? ai(MOD_SYS, `Question: ${q}`) : mockMod(q);
+const moderate = q => HAS ? ai(MOD_SYS, `Question: ${q}`) : mockMod(q);
 async function grade(q, a, tc) {
-  const g = KEY ? await ai(GRADE_SYS, `Question: ${q}\nAnswer: ${a}` + (tc ? `\nTrap answer: ${tc}` : '')) : mockGrade(q, a, tc); // player identity never sent
+  const g = HAS ? await ai(GRADE_SYS, `Question: ${q}\nAnswer: ${a}` + (tc ? `\nTrap answer: ${tc}` : '')) : mockGrade(q, a, tc); // player identity never sent
   if (g.valid && !(g.category in CATS)) g.category = 'Plankton'; // e.g. a stray "Too Clever" is coerced
   g.trap = !!(g.valid && tc && g.matches_trap);
   return g;
@@ -127,4 +138,4 @@ http.createServer(async (req, res) => {
     if (req.method === 'GET') { res.writeHead(200, { 'content-type': 'text/html' }); return res.end(fs.readFileSync(path.join(__dirname, 'public/index.html'))); }
     send(res, 404, { error: 'Not found' });
   } catch (e) { send(res, e.status || 500, { error: e.message }); }
-}).listen(PORT, () => console.log(`Krillion Party on :${PORT} (${KEY ? 'Claude ' + MODEL : 'MOCK AI: no ANTHROPIC_API_KEY'})`));
+}).listen(PORT, () => console.log(`Krillion Party on :${PORT} (${GROQ ? 'Groq ' + GROQ_MODEL : KEY ? 'Claude ' + MODEL : 'MOCK AI: set GROQ_API_KEY or ANTHROPIC_API_KEY'})`));
