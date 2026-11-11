@@ -155,7 +155,11 @@ const act = {
       r.questions[p.id] = { text, tooClever: clean(b.tooClever, 120) || null };
       if (Object.keys(r.questions).length === r.players.size) assign(r);
       push(r); return { approved: true, difficulty: m.difficulty };
-    } catch (e) { if (e.status) throw e; fail(502, 'Moderation failed, try again'); } finally { r.busy.delete(p.id); } },
+    } } catch (e) {
+  console.error('MODERATION ERROR:', e);
+  if (e.status) throw e;
+  fail(502, 'Moderation failed, try again');
+} finally { r.busy.delete(p.id); } },
   async answer(b) { const [r, p] = ctx(b); if (r.phase !== 'answering') fail(409, 'Not answering');
     if (r.answers[p.id] || r.busy.has(p.id)) fail(409, 'Already answered');
     if (Date.now() > r.deadline) fail(409, 'Time is up!');
