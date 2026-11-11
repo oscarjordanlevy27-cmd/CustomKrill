@@ -20,11 +20,23 @@ const names = ['Oscar', 'Alex', 'Sam'], T = names.map(n => 'tok-' + n);
     for (let i = 0; i < 3; i++) { const s = await state(code, T[i]); ok(s.phase === 'answering', names[i] + ' sees answering');
       tasks.push(s.task.question); ok(!s.task.question.includes(names[i]), names[i] + ' did not get own question'); ok(!/"answer"|"tooClever"/.test(JSON.stringify(s)), 'no leaks'); }
     ok(new Set(tasks).size === 3, 'each question assigned exactly once');
-    ok((await post('answer', { token: T[0], code, text: '  ' })).ok === false, 'empty answer rejected, retry allowed');
-    for (let i = 0; i < 3; i++) { ok((await post('answer', { token: T[i], code, text: `answer${i}-r${round}` })).ok, 'answered ' + names[i]);
+    const e0 = await post('answer', { token: T[0], code, text: '  ' }); ok(e0.ok === false && e0.empty, 'blank answer is not submitted until confirmed, retry allowed');
+    if (round === 1) {
+      const sp = await post('answer', { token: T[0], code, text: 'spagetti' }); ok(sp.ok === false && sp.suggest === 'spaghetti' && sp.original === 'spagetti', 'slight misspelling returns a "did you mean" suggestion');
+      const mid = await state(code, T[0]); ok(mid.players.find(p => p.id === mid.me).hasA === false, 'suggestion does not lock in an answer');
+      const bad = await post('answer', { token: T[0], code, text: '!!!' }); ok(bad.ok === false && !bad.suggest, 'answer that is not in the category is rejected, retry allowed');
+    }
+    if (round === 2) {
+      const typo = await post('answer', { token: T[1], code, text: 'pene' }); ok(typo.ok === false && typo.suggest === 'penne', 'typo suggestion for pene');
+      const yes = await post('answer', { token: T[1], code, text: typo.suggest, confirmed: true }); ok(yes.ok === true, 'accepting the suggestion submits the corrected answer');
+      const none = await post('answer', { token: T[2], code, text: '', confirmEmpty: true }); ok(none.ok === true, 'confirmed blank answer is accepted');
+    }
+    for (let i = 0; i < 3; i++) { if (round === 2 && i > 0) continue; ok((await post('answer', { token: T[i], code, text: `answer${i}-r${round}` })).ok, 'answered ' + names[i]);
       ok((await post('answer', { token: T[i], code, text: 'again' })).s === 409, 'duplicate blocked'); }
     const s = await state(code, T[1]); ok(s.phase === 'results', 'results revealed');
-    const P = { 'Too Clever': 15, Plankton: 10, Schooler: 30, Rare: 60, 'Deep Cut': 85, 'One in a Krillion': 100 };
+    if (round === 2) { const r1 = s.results.rows.find(x => x.answerer === 'Alex'), r2 = s.results.rows.find(x => x.answerer === 'Sam');
+      ok(r1.answer === 'penne', 'corrected spelling is what gets graded and shown'); ok(r2.category === 'No answer' && r2.points === 0, 'blank answer scores 0'); }
+    const P = { 'No answer': 0, 'Too Clever': 15, Plankton: 10, Schooler: 30, Rare: 60, 'Deep Cut': 85, 'One in a Krillion': 100 };
     for (const row of s.results.rows) ok(P[row.category] === row.points, `points match category (${row.category}=${row.points})`);
     for (const p of s.players) { const gave = s.results.rows.find(x => x.answererId === p.id).points, got = s.results.rows.find(x => x.authorId === p.id).points;
       total[p.id] = (total[p.id] || 0) + (gave - got); ok(s.results.scores[p.id].round === gave - got, `${p.name}: ${gave}-${got} signed round score`); ok(p.score === total[p.id], `${p.name} cumulative = ${total[p.id]}`); }
@@ -32,9 +44,11 @@ const names = ['Oscar', 'Alex', 'Sam'], T = names.map(n => 'tok-' + n);
     ok((await post('next', { token: T[0], code })).s === 200, 'next round');
   }
   for (let i = 0; i < 3; i++) await post('question', { token: T[i], code, text: `Name a type of pasta (3-${names[i]})` });
-  for (let i = 0; i < 2; i++) await post('answer', { token: T[i], code, text: `answer${i}-r3` });
+  await post('answer', { token: T[0], code, text: 'answer0-r3' });
+  ok((await post('answer', { token: T[1], code, text: 'spagetti', confirmed: true, literal: true })).ok === true, '"No, keep mine" accepts the typed spelling as written');
   await new Promise(r => setTimeout(r, 2500));
   const s3 = await state(code, T[0]); ok(s3.phase === 'results', 'timer ends the round');
+  ok(s3.results.rows.find(x => x.answerer === 'Alex').answer === 'spagetti', 'kept spelling is shown as typed');
   const late = s3.results.rows.find(x => x.answerer === 'Sam'); ok(late.category === 'No answer' && late.points === 0, 'timed-out player gets 0');
   ok((await post('answer', { token: T[2], code, text: 'late' })).s === 409, 'late answer rejected');
   console.log('\nALL PASSED'); srv.kill();
