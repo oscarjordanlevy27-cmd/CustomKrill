@@ -10,24 +10,25 @@ button{background:var(--ink);color:var(--bg);cursor:pointer;border:0}button.alt{
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin:12px 0}
 .row{display:flex;justify-content:space-between;gap:8px;align-items:center}.mut{color:var(--mut);font-size:.9rem}.err{color:#c2410c}
 .tag{display:inline-block;padding:2px 10px;border-radius:99px;font-size:.8rem;font-weight:600;color:#1d1d1b}
-.Plankton{background:#e3e3dd}.TooClever{background:#f5c6c6}.Schooler{background:#cfe8f3}.Rare{background:#dccff5}.DeepCut{background:#ffcf94}
+.Plankton{background:#e3e3dd}.NoAnswer{background:#ddd;opacity:.7}.TooClever{background:#f5c6c6}.Schooler{background:#cfe8f3}.Rare{background:#dccff5}.DeepCut{background:#ffcf94}
 .Krillion{background:linear-gradient(90deg,#ff9ec4,#ffd36e);box-shadow:0 0 0 2px #ff9ec455}
 </style><main></main>
 <script>
 const $=s=>document.querySelector(s),esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const tok=sessionStorage.tok||(sessionStorage.tok=crypto.randomUUID()); // per-tab identity: separate tabs/incognito = separate players
 let S=null,es=null,msg='',mod=null;
-const cc=c=>c==='Too Clever'?'TooClever':c==='Deep Cut'?'DeepCut':c==='One in a Krillion'?'Krillion':c;
+const fmt=n=>n>0?'+'+n:String(n);
+const cc=c=>c==='No answer'?'NoAnswer':c==='Too Clever'?'TooClever':c==='Deep Cut'?'DeepCut':c==='One in a Krillion'?'Krillion':c;
 const tag=(c,p)=>`<span class="tag ${cc(c)}">${esc(c)} · ${p}</span>`;
 async function api(a,b={}){try{const r=await fetch('/api/'+a,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:tok,code:sessionStorage.code,...b})});const t=await r.text();let d;try{d=JSON.parse(t)}catch{msg='This page is not being served by the game server (got HTML, not JSON). In the project folder run: node server.js, then open http://localhost:3000 (do not open index.html directly or use another dev server).';draw();return null}msg=r.ok?'':(d.error||'Error');draw();return r.ok?d:null}catch(e){msg='Cannot reach the game server: '+e.message;draw()}}
-function connect(){es&&es.close();es=new EventSource(`/events?code=${sessionStorage.code}&token=${tok}`);es.onmessage=e=>{const n=JSON.parse(e.data);if(S&&(S.phase!==n.phase||S.round!==n.round))mod=null;S=n;draw()}}
+function connect(){es&&es.close();es=new EventSource(`/events?code=${sessionStorage.code}&token=${tok}`);es.onmessage=e=>{const n=JSON.parse(e.data);n.endAt=n.msLeft!=null?Date.now()+n.msLeft:null;if(S&&(S.phase!==n.phase||S.round!==n.round))mod=null;S=n;draw()}}
 async function enter(a,b){sessionStorage.name=b.name;const d=await api(a,{...b,code:b.code});if(d?.code){sessionStorage.code=d.code;history.replaceState(0,'','/');connect()}}
 const create=()=>enter('create',{name:$('#nm').value,code:undefined});
 const join=()=>enter('join',{name:$('#nm').value,code:$('#cd').value.toUpperCase()});
 async function sendQ(){const d=await api('question',{text:$('#q'+S.round).value,tooClever:$('#tc'+S.round).value});if(d)mod=d.approved?null:d;draw()}
 async function sendA(){const d=await api('answer',{text:$('#a'+S.round).value});if(d&&!d.ok)msg=d.reason;draw()}
-const board=()=>`<div class=card><b>Leaderboard</b>${[...S.players].sort((a,b)=>b.score-a.score).map((p,i)=>`<div class=row><span>${i+1}. ${esc(p.name)}${p.online?'':' 💤'}</span><span><b>${p.score}</b> ${S.history.map(h=>`<span class=mut>+${h.scores[p.id]??0}</span>`).join(' ')}</span></div>`).join('')}</div>`;
-const home=()=>`<h1>🦐 Krillion Party</h1><p>Write a question for a friend. Answer a question from someone else. Your score is the <b>gap</b> in nicheness between the answer you gave and the answer your question got. Obscure answers are worth more, so write questions that pull out answers unlike yours.</p>
+const board=()=>`<div class=card><b>Leaderboard</b>${[...S.players].sort((a,b)=>b.score-a.score).map((p,i)=>`<div class=row><span>${i+1}. ${esc(p.name)}${p.online?'':' 💤'}</span><span><b>${p.score}</b> ${S.history.map(h=>`<span class=mut>${fmt(h.scores[p.id]??0)}</span>`).join(' ')}</span></div>`).join('')}</div>`;
+const home=()=>`<h1>🦐 Krillion Party</h1><p>Write a question for a friend. Answer a question from someone else. Your round score is the nicheness of the answer <b>you</b> gave minus the nicheness of the answer your question got, so it can go negative. Answer niche, and write questions that get common answers. You have 25 seconds to answer.</p>
 <div class=card><input id=nm placeholder="Your name" maxlength=20 value="${esc(sessionStorage.name||'')}"><button onclick="create()">Create room</button><hr style="border:0;border-top:1px solid var(--line);margin:14px 0"><input id=cd placeholder="Room code" maxlength=4 style="text-transform:uppercase" value="${esc(new URLSearchParams(location.search).get('room')||'')}"><button class=alt onclick="join()">Join room</button></div>`;
 function room(){const me=S.players.find(p=>p.id===S.me),host=S.hostId===S.me,n=S.players.length,R=S.round;
  let h=`<div class=row><b>🦐 Room ${S.code}</b><span class=mut>${S.round?'Round '+R:'Lobby'}</span></div>`,b='';
@@ -37,12 +38,13 @@ function room(){const me=S.players.find(p=>p.id===S.me),host=S.hostId===S.me,n=S
   `<div class=card><b>Write a question</b><p class=mut>Something with answers from obvious to obscure, like "Name a type of pasta".</p><textarea id="q${R}" rows=2 maxlength=200 placeholder="Name a…"></textarea>
   <div class=mut style="margin-top:8px">Too Clever answer (optional): the niche answer you think someone will give. If they give it, it only scores 15. Hidden from them.</div><input id="tc${R}" maxlength=120 placeholder="e.g. a very niche answer">
   ${mod?`<p class=err>${esc(mod.reason)}${mod.suggested_revision?`<br><i>Try: ${esc(mod.suggested_revision)}</i>`:''}</p>`:''}<button onclick="sendQ()">Submit question</button></div>`;
- else if(S.phase==='answering')b=S.task?`<div class=card><div class=mut>Your question</div><h2 style="margin:.2em 0">${esc(S.task.question)}</h2><input id="a${R}" maxlength=120 placeholder="Your answer" onkeydown="event.key==='Enter'&&sendA()"><button onclick="sendA()">Submit answer</button></div>`:`<div class=card>✅ Answer graded. Waiting for others (${S.players.filter(p=>p.hasA).length}/${n}).</div>`;
+ else if(S.phase==='answering')b=S.task?`<div class=card><div class=row><div class=mut>Your question</div><b id=timer></b></div><h2 style="margin:.2em 0">${esc(S.task.question)}</h2><input id="a${R}" maxlength=120 placeholder="Your answer" onkeydown="event.key==='Enter'&&sendA()"><button onclick="sendA()">Submit answer</button></div>`:`<div class=card>✅ Done. Waiting for others (${S.players.filter(p=>p.hasA).length}/${n}).</div>`;
  else b=`<h2>Round ${R} results</h2>`+S.results.rows.map(x=>`<div class=card><div class=mut>${esc(x.author)} asked${x.tooClever?` · Too Clever answer: <b>${esc(x.tooClever)}</b> ${x.caught?'✅ caught':'❌ missed'}`:''}</div><b>${esc(x.question)}</b><div class=row style="margin-top:8px"><span>${esc(x.answerer)}: <b>${esc(x.answer)}</b></span>${tag(x.category,x.points)}</div><div class=mut>${esc(x.reason)}</div></div>`).join('')+
-  `<div class=card><b>Round scores</b>${Object.values(S.results.scores).map(s=>`<div class=row><span>${esc(s.name)} <span class=mut>|${s.gave} − ${s.got}|</span></span><b>+${s.round}</b></div>`).join('')}</div>`+(host?`<button onclick="api('next')">Next round</button>`:'<p class=mut>Waiting for the host to start the next round.</p>');
+  `<div class=card><b>Round scores</b>${Object.values(S.results.scores).map(s=>`<div class=row><span>${esc(s.name)} <span class=mut>${s.gave} − ${s.got}</span></span><b>${fmt(s.round)}</b></div>`).join('')}</div>`+(host?`<button onclick="api('next')">Next round</button>`:'<p class=mut>Waiting for the host to start the next round.</p>');
  return h+b+(S.round?board():'')}
 function draw(){const keep={};document.querySelectorAll('textarea,input').forEach(e=>e.id&&(keep[e.id]=[e.value,e.checked,document.activeElement===e]));
  $('main').innerHTML=(S?room():home())+(msg?`<p class=err>${esc(msg)}</p>`:'');
  for(const id in keep){const e=document.getElementById(id);if(e){e.value=keep[id][0];e.checked=keep[id][1];keep[id][2]&&e.focus()}}}
+setInterval(()=>{const e=document.getElementById('timer');if(e&&S?.endAt){const t=Math.max(0,Math.ceil((S.endAt-Date.now())/1000));e.textContent=t+'s';e.className=t<=5?'err':''}},250);
 (async()=>{if(sessionStorage.code){const r=await fetch(`/api/state?code=${sessionStorage.code}&token=${tok}`);if(r.ok)connect();else delete sessionStorage.code}draw()})();
 </script></html>
