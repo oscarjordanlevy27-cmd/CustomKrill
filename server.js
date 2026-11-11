@@ -3,7 +3,7 @@ const http = require('http'), fs = require('fs'), path = require('path');
 const PORT = process.env.PORT || 3000, KEY = process.env.ANTHROPIC_API_KEY, GROQ = process.env.GROQ_API_KEY;
 const HAS = GROQ || KEY; // Groq wins if both are set; neither = mock grader
 const ANSWER_MS = +process.env.ANSWER_MS || 25000; // time limit to answer
-const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
+const GROQ_MODEL = process.env.GROQ_MODEL || 'openai/gpt-oss-120b';
 const MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-5-5';
 // Too Clever (15) is not gradable by nicheness: it applies only when an answer matches the question writer's optional trap answer.
 const CATS = { Plankton: 10, Schooler: 30, Rare: 60, 'Deep Cut': 85, 'One in a Krillion': 100 };
